@@ -39,7 +39,7 @@ def parse_array(lines, func_name):
 def parse_object(lines, func_name):
     if "Start " not in (line := next(lines)):
         raise Exception(f"Error got line \"{line}\" not Start Object")
-    const_list = iter(parse_const_array(lines, func_name)[1:])
+    const_list = iter(parse_object_boilerplate_description(lines, func_name)[1:])
     object_literal = "{" + ", ".join([f"{key}: {value}" for key, value in zip(const_list, const_list)]) + "}"
     while "End " not in (line := next(lines)):
         pass
@@ -103,6 +103,33 @@ def parse_const_array(lines, func_name):
     value = ""
     next_idx = 0
     const_list = []
+
+    for idx in range(size):
+        if next_idx != idx:
+            const_list.append(value)
+            continue
+        next_idx, value = parse_const_line(lines, func_name)
+        const_list.append(value)
+
+    return const_list
+
+
+def parse_object_boilerplate_description(lines, func_name):
+    while "- capacity:" not in (line := next(lines)) and "- length:" not in line:
+        pass
+    if "- length:" in line: # < 12.0.79, see https://github.com/v8/v8/commit/921521fedcfa3f861d1e1371bf74bcb6263f1aaf#diff-eba517e07cd0a4e7ae3add49039826e75d76a6425009524713d2e10dc3542f8e
+        set_repeat_line_flag(True)
+        return parse_const_array(lines, func_name)
+    size = int(parse("- capacity:{}", line)[0])
+    if not size:
+        return []
+
+    while (line := next(lines)) != "- elements:":
+        pass
+
+    value = ""
+    next_idx = 0
+    const_list = [8] # the `8` is a useless placeholder
 
     for idx in range(size):
         if next_idx != idx:
