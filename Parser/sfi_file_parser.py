@@ -1,6 +1,7 @@
 from Parser.shared_function_info import SharedFunctionInfo, CodeLine
 from parse import parse
 import re
+import string
 
 all_functions = {}
 repeat_last_line = False
@@ -63,6 +64,118 @@ def parse_bytecode(line, lines):
     return code_list
 
 
+def parse_string(data: str, length: int) -> str:
+    n = len(data)
+
+    def is_hex(s):
+        return all(c in string.hexdigits for c in s)
+
+    def dfs(i, out, out_length):
+        if out_length == length:
+            if i == n:
+                return out
+            return None
+        if i >= n:
+            return None
+
+        if i + 2 <= n and data[i] == '\\' and data[i + 1] == 'x': # \xXX / \xXXX / \xXXXX
+            j = i + 2
+
+            for l in (2, 3, 4):
+                if j + l <= n:
+                    hex_part = data[j:j + l]
+                    if not is_hex(hex_part):
+                        continue
+
+                    code = int(hex_part, 16)
+
+                    if code <= 0x06 or 0x0E <= code <= 0x1F or code == 0x7F:
+                        res = dfs(j + l, out + r'\x' + hex_part, out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x07:
+                        res = dfs(j + l, out + r'\a', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x08:
+                        res = dfs(j + l, out + r'\b', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x09:
+                        res = dfs(j + l, out + r'\t', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x0A:
+                        res = dfs(j + l, out + r'\n', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x0B:
+                        res = dfs(j + l, out + r'\v', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x0C:
+                        res = dfs(j + l, out + r'\f', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif code == 0x0D:
+                        res = dfs(j + l, out + r'\r', out_length + 1)
+                        if res is not None:
+                            return res
+                        continue
+                    elif 0xD800 <= code <= 0xDBFF:
+                        k = j + l
+                        if not (k + 6 <= n and data[k] == '\\' and data[k + 1] == 'x'):
+                            res = dfs(j + l, out + r'\u' + hex_part, out_length + 1)
+                            if res is not None:
+                                return res
+                            continue
+
+                        low_hex = data[k + 2:k + 6]
+                        if not is_hex(low_hex):
+                            continue
+
+                        low = int(low_hex, 16)
+                        if not (0xDC00 <= low <= 0xDFFF):
+                            continue
+
+                        full_code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                        ch = chr(full_code)
+
+                        res = dfs(k + 6, out + ch, out_length + 2)
+                        if res is not None:
+                            return res
+                    elif 0xDC00 <= code <= 0xDFFF:
+                        res = dfs(j + l, out + r'\u' + hex_part, out_length + 1)
+                        if res is not None:
+                            return res
+                    else:
+                        ch = chr(code)
+                        res = dfs(j + l, out + ch, out_length + 1)
+                        if res is not None:
+                            return res
+
+            return None
+        elif i + 2 <= n and data[i] == '\\' and data[i + 1] == '\\': # \\
+            return dfs(i + 2, out + '\\\\', out_length + 1)
+        else: # normal char
+            skipped = 1
+            while i + skipped < n and data[i + skipped] != '\\': # reduce unnecessary recursive calls
+                skipped += 1
+            return dfs(i + skipped, out + data[i:i+skipped], out_length + skipped)
+
+    result = dfs(0, "", 0)
+    if result is None:
+        raise ValueError("Invalid：found unknown unicode encoding rule")
+    return result
+
+
 def parse_const_line(lines, func_name):
     var_line = next(lines)
     match = re.search(r"^(\d+(?:\-\d+)?):\s(0x[0-9a-fA-F]+\s)?(.+)", var_line)
@@ -75,7 +188,11 @@ def parse_const_line(lines, func_name):
     if not address:
         return var_idx, value
     if value.startswith("<String"):
-        value = value.split("#", 1)[-1].rstrip('> ').replace('"', '\\"')
+        [length, value] = parse("<String[{}]: {}>", value)
+        [encoding, value] = value.split("#", 1)
+        if encoding == "u":
+            value = parse_string(value, int(length))
+        value = value.replace('"', '\\"')
         return var_idx, f'"{value}"'
     if value.startswith("<SharedFunctionInfo"):
         value = value.split(" ", 1)[-1].rstrip('> ') if " " in value else ""
